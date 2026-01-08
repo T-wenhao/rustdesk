@@ -42,7 +42,10 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
-    if: github.event.inputs.build_platform == 'all' || github.event.inputs.build_platform == 'windows'
+    if: |
+      github.event_name == 'push' ||
+      github.event.inputs.build_platform == 'all' ||
+      github.event.inputs.build_platform == 'windows'
 
     env:
       CUSTOM_CLIENT_KEY: ${{ github.event.inputs.client_key || secrets.CUSTOM_CLIENT_KEY || '' }}
@@ -138,7 +141,10 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
-    if: github.event.inputs.build_platform == 'all' || github.event.inputs.build_platform == 'linux'
+    if: |
+      github.event_name == 'push' ||
+      github.event.inputs.build_platform == 'all' ||
+      github.event.inputs.build_platform == 'linux'
 
     env:
       CUSTOM_CLIENT_KEY: ${{ github.event.inputs.client_key || secrets.CUSTOM_CLIENT_KEY || '' }}
@@ -245,7 +251,10 @@ jobs:
 
   build-macos:
     runs-on: macos-latest
-    if: github.event.inputs.build_platform == 'all' || github.event.inputs.build_platform == 'macos'
+    if: |
+      github.event_name == 'push' ||
+      github.event.inputs.build_platform == 'all' ||
+      github.event.inputs.build_platform == 'macos'
 
     env:
       CUSTOM_CLIENT_KEY: ${{ github.event.inputs.client_key || secrets.CUSTOM_CLIENT_KEY || '' }}
@@ -347,7 +356,10 @@ jobs:
   create-release:
     runs-on: ubuntu-latest
     needs: [build-windows, build-linux, build-macos]
-    if: github.event.inputs.build_platform == 'all' && always() && (needs.build-windows.result == 'success' || needs.build-linux.result == 'success' || needs.build-macos.result == 'success')
+    if: |
+      (github.event_name == 'push' || github.event.inputs.build_platform == 'all') &&
+      always() &&
+      (needs.build-windows.result == 'success' || needs.build-linux.result == 'success' || needs.build-macos.result == 'success')
 
     steps:
       - name: Download all artifacts
@@ -356,20 +368,18 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: custom-${{ github.event.inputs.rendezvous_server }}-${{ github.run_number }}
-          name: Custom Build - ${{ github.event.inputs.rendezvous_server }}
+          tag_name: custom-${{ github.event.inputs.rendezvous_server || 'custom-build' }}-${{ github.run_number }}
+          name: Custom Build - ${{ github.event.inputs.rendezvous_server || 'custom-build' }}
           body: |
-            Custom RustDesk build for server: ${{ github.event.inputs.rendezvous_server }}
+            Custom RustDesk build
 
             **Configuration:**
-            - Rendezvous: ${{ github.event.inputs.rendezvous_server }}
-            - API: ${{ github.event.inputs.api_server || 'Default' }}
-            - Relay: ${{ github.event.inputs.relay_server || 'Default' }}
+            - Rendezvous: ${{ github.event.inputs.rendezvous_server || secrets.CUSTOM_RENDEZVOUS_SERVER || 'Not specified' }}
+            - API: ${{ github.event.inputs.api_server || secrets.CUSTOM_API_SERVER || 'Default' }}
+            - Relay: ${{ github.event.inputs.relay_server || secrets.CUSTOM_RELAY_SERVER || 'Default' }}
 
             Generated via GitHub Actions
           files: |
-            rustdesk-custom-${{ github.event.inputs.rendezvous_server }}-Windows/rustdesk*
-            rustdesk-custom-${{ github.event.inputs.rendezvous_server }}-Linux/rustdesk*
-            rustdesk-custom-${{ github.event.inputs.rendezvous_server }}-macOS/rustdesk*
+            rustdesk-custom-*/rustdesk*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

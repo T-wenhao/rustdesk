@@ -1,0 +1,7 @@
+Custom RustDesk Configuration
+=============================
+Generated: unknown
+Rendezvous Server: test.example.com
+API Server: https://api.test.example.com
+Relay Server: https://relay.test.example.com
+Client Key: configured

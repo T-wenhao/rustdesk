@@ -57,6 +57,29 @@ Please download Sciter dynamic library yourself.
 
 - run `cargo run`
 
+## Custom Server Configuration
+
+You can build RustDesk with pre-configured server settings for your own deployment:
+
+```bash
+# Set environment variables
+export CUSTOM_RENDEZVOUS_SERVER="your-server.com"
+export CUSTOM_CLIENT_KEY="your-key"
+export CUSTOM_API_SERVER="https://api.your-server.com"
+export CUSTOM_RELAY_SERVER="https://relay.your-server.com"
+
+# Build with custom configuration
+cargo build --release --features flutter
+```
+
+Or use the provided build script:
+
+```bash
+./build_custom.sh --key "your-key" --rendezvous "your-server.com"
+```
+
+See [CUSTOM_CONFIG.md](CUSTOM_CONFIG.md) for detailed documentation.
+
 ## [Build](https://rustdesk.com/docs/en/dev/build/)
 
 ## How to Build on Linux

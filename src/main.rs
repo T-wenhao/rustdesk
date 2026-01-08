@@ -11,6 +11,7 @@ fn main() {
         eprintln!("Global initialization failed.");
         return;
     }
+    crate::custom_config::apply_build_config();
     common::test_rendezvous_server();
     common::test_nat_type();
     common::global_clean();
@@ -38,6 +39,7 @@ fn main() {
     if !common::global_init() {
         return;
     }
+    crate::custom_config::apply_build_config();
     use clap::App;
     use hbb_common::log;
     let args = format!(

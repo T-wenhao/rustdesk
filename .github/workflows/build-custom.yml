@@ -22,14 +22,14 @@ on:
         required: true
         type: string
       build_platform:
-        description: 'Target platform'
+        description: 'Target platform (all builds all platforms)'
         required: true
         type: choice
         options:
+          - all
           - windows
           - linux
           - macos
-          - all
         default: 'all'
 
   push:
@@ -40,25 +40,9 @@ on:
       - 'custom_config_template.rs'
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
-        exclude:
-          - os: windows-latest
-            platform: linux
-          - os: ubuntu-latest
-            platform: windows
-          - os: macos-latest
-            platform: windows
-          - os: windows-latest
-            platform: macos
-          - os: ubuntu-latest
-            platform: macos
-          - os: macos-latest
-            platform: linux
-
-    runs-on: ${{ matrix.os }}
+  build-windows:
+    runs-on: windows-latest
+    if: github.event.inputs.build_platform == 'all' || github.event.inputs.build_platform == 'windows'
 
     env:
       CUSTOM_CLIENT_KEY: ${{ github.event.inputs.client_key || secrets.CUSTOM_CLIENT_KEY || '' }}
@@ -77,16 +61,103 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Setup vcpkg (Windows)
-        if: runner.os == 'Windows'
+      - name: Setup vcpkg
         run: |
           git clone https://github.com/microsoft/vcpkg
           .\vcpkg\bootstrap-vcpkg.bat
           echo "VCPKG_ROOT=$env:VCPKG_ROOT" >> $env:GITHUB_ENV
           vcpkg\vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static aom:x64-windows-static
 
-      - name: Setup vcpkg (Linux/macOS)
-        if: runner.os != 'Windows'
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.16.x'
+          channel: 'stable'
+
+      - name: Verify Configuration
+        run: |
+          echo "=== Configuration Verification ==="
+          echo "Client Key: ${{ env.CUSTOM_CLIENT_KEY != '' && '***' || 'Not set' }}"
+          echo "API Server: ${{ env.CUSTOM_API_SERVER || 'Not set' }}"
+          echo "Relay Server: ${{ env.CUSTOM_RELAY_SERVER || 'Not set' }}"
+          echo "Rendezvous Server: ${{ env.CUSTOM_RENDEZVOUS_SERVER || 'Not set' }}"
+          echo "=================================="
+
+      - name: Build Rust Core
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_ROOT
+          $env:CUSTOM_CLIENT_KEY = "${{ env.CUSTOM_CLIENT_KEY }}"
+          $env:CUSTOM_API_SERVER = "${{ env.CUSTOM_API_SERVER }}"
+          $env:CUSTOM_RELAY_SERVER = "${{ env.CUSTOM_RELAY_SERVER }}"
+          $env:CUSTOM_RENDEZVOUS_SERVER = "${{ env.CUSTOM_RENDEZVOUS_SERVER }}"
+
+          cargo build --release --features flutter
+
+          if (Test-Path "target/release/rustdesk.exe") {
+            echo "✅ Build successful"
+          } else {
+            echo "❌ Build failed"
+            exit 1
+          }
+
+      - name: Build Flutter UI
+        run: |
+          cd flutter
+          flutter pub get
+          flutter build windows --release
+
+      - name: Package Artifacts
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts
+
+          if (Test-Path "target/release/rustdesk.exe") {
+            Copy-Item "target/release/rustdesk.exe" -Destination "artifacts/"
+            Copy-Item "target/release/rustdesk.exe" -Destination "artifacts/rustdesk-custom-${{ env.CUSTOM_RENDEZVOUS_SERVER }}.exe"
+          }
+
+          if (Test-Path "flutter/build/windows/x64/runner/Release") {
+            Copy-Item "flutter/build/windows/x64/runner/Release/*" -Destination "artifacts/" -Recurse -ErrorAction SilentlyContinue
+          }
+
+          @"
+          Custom Server Configuration
+          =========================
+          Generated: $(Get-Date)
+          Rendezvous Server: ${{ env.CUSTOM_RENDEZVOUS_SERVER }}
+          API Server: ${{ env.CUSTOM_API_SERVER || 'Default' }}
+          Relay Server: ${{ env.CUSTOM_RELAY_SERVER || 'Default' }}
+          Client Key: ${{ env.CUSTOM_CLIENT_KEY != '' && 'Configured' || 'Not set' }}
+          "@ | Out-File -FilePath "artifacts/custom-config-info.txt" -Encoding UTF8
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustdesk-custom-${{ env.CUSTOM_RENDEZVOUS_SERVER }}-Windows
+          path: artifacts/
+          retention-days: 30
+
+  build-linux:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.build_platform == 'all' || github.event.inputs.build_platform == 'linux'
+
+    env:
+      CUSTOM_CLIENT_KEY: ${{ github.event.inputs.client_key || secrets.CUSTOM_CLIENT_KEY || '' }}
+      CUSTOM_API_SERVER: ${{ github.event.inputs.api_server || secrets.CUSTOM_API_SERVER || '' }}
+      CUSTOM_RELAY_SERVER: ${{ github.event.inputs.relay_server || secrets.CUSTOM_RELAY_SERVER || '' }}
+      CUSTOM_RENDEZVOUS_SERVER: ${{ github.event.inputs.rendezvous_server || secrets.CUSTOM_RENDEZVOUS_SERVER || '' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Setup vcpkg
         run: |
           git clone https://github.com/microsoft/vcpkg
           ./vcpkg/bootstrap-vcpkg.sh
@@ -94,14 +165,13 @@ jobs:
           echo "VCPKG_ROOT=$VCPKG_ROOT" >> $GITHUB_ENV
           $VCPKG_ROOT/vcpkg install libvpx libyuv opus aom
 
-      - name: Setup Flutter (for Flutter builds)
+      - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.16.x'
           channel: 'stable'
 
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -111,8 +181,104 @@ jobs:
             libclang-dev ninja-build libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev libpam0g-dev
 
-      - name: Install system dependencies (macOS)
-        if: runner.os == 'macOS'
+      - name: Verify Configuration
+        run: |
+          echo "=== Configuration Verification ==="
+          echo "Client Key: ${{ env.CUSTOM_CLIENT_KEY != '' && '***' || 'Not set' }}"
+          echo "API Server: ${{ env.CUSTOM_API_SERVER || 'Not set' }}"
+          echo "Relay Server: ${{ env.CUSTOM_RELAY_SERVER || 'Not set' }}"
+          echo "Rendezvous Server: ${{ env.CUSTOM_RENDEZVOUS_SERVER || 'Not set' }}"
+          echo "=================================="
+
+      - name: Build Rust Core
+        run: |
+          export VCPKG_ROOT=$VCPKG_ROOT
+          export CUSTOM_CLIENT_KEY="${{ env.CUSTOM_CLIENT_KEY }}"
+          export CUSTOM_API_SERVER="${{ env.CUSTOM_API_SERVER }}"
+          export CUSTOM_RELAY_SERVER="${{ env.CUSTOM_RELAY_SERVER }}"
+          export CUSTOM_RENDEZVOUS_SERVER="${{ env.CUSTOM_RENDEZVOUS_SERVER }}"
+
+          cargo build --release --features flutter
+
+          if [ -f "target/release/rustdesk" ]; then
+            echo "✅ Build successful"
+          else
+            echo "❌ Build failed"
+            exit 1
+          fi
+
+      - name: Build Flutter UI
+        run: |
+          cd flutter
+          flutter pub get
+          flutter build linux --release
+
+      - name: Package Artifacts
+        run: |
+          mkdir -p artifacts
+
+          if [ -f "target/release/rustdesk" ]; then
+            cp target/release/rustdesk artifacts/
+            cp target/release/rustdesk artifacts/rustdesk-custom-${{ env.CUSTOM_RENDEZVOUS_SERVER }}
+          fi
+
+          if [ -d "flutter/build/linux/x64/release/bundle" ]; then
+            cp -r flutter/build/linux/x64/release/bundle/* artifacts/ 2>/dev/null || true
+          fi
+
+          cat > artifacts/custom-config-info.txt << EOF
+          Custom Server Configuration
+          =========================
+          Generated: $(date)
+          Rendezvous Server: ${{ env.CUSTOM_RENDEZVOUS_SERVER }}
+          API Server: ${{ env.CUSTOM_API_SERVER || 'Default' }}
+          Relay Server: ${{ env.CUSTOM_RELAY_SERVER || 'Default' }}
+          Client Key: ${{ env.CUSTOM_CLIENT_KEY != '' && 'Configured' || 'Not set' }}
+          EOF
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustdesk-custom-${{ env.CUSTOM_RENDEZVOUS_SERVER }}-Linux
+          path: artifacts/
+          retention-days: 30
+
+  build-macos:
+    runs-on: macos-latest
+    if: github.event.inputs.build_platform == 'all' || github.event.inputs.build_platform == 'macos'
+
+    env:
+      CUSTOM_CLIENT_KEY: ${{ github.event.inputs.client_key || secrets.CUSTOM_CLIENT_KEY || '' }}
+      CUSTOM_API_SERVER: ${{ github.event.inputs.api_server || secrets.CUSTOM_API_SERVER || '' }}
+      CUSTOM_RELAY_SERVER: ${{ github.event.inputs.relay_server || secrets.CUSTOM_RELAY_SERVER || '' }}
+      CUSTOM_RENDEZVOUS_SERVER: ${{ github.event.inputs.rendezvous_server || secrets.CUSTOM_RENDEZVOUS_SERVER || '' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Setup vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg
+          ./vcpkg/bootstrap-vcpkg.sh
+          export VCPKG_ROOT=$PWD/vcpkg
+          echo "VCPKG_ROOT=$VCPKG_ROOT" >> $GITHUB_ENV
+          $VCPKG_ROOT/vcpkg install libvpx libyuv opus aom
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.16.x'
+          channel: 'stable'
+
+      - name: Install system dependencies
         run: |
           brew install nasm yasm
 
@@ -125,8 +291,7 @@ jobs:
           echo "Rendezvous Server: ${{ env.CUSTOM_RENDEZVOUS_SERVER || 'Not set' }}"
           echo "=================================="
 
-      - name: Build Rust Core (Desktop)
-        if: github.event.inputs.build_platform != 'flutter-only'
+      - name: Build Rust Core
         run: |
           export VCPKG_ROOT=$VCPKG_ROOT
           export CUSTOM_CLIENT_KEY="${{ env.CUSTOM_CLIENT_KEY }}"
@@ -134,11 +299,9 @@ jobs:
           export CUSTOM_RELAY_SERVER="${{ env.CUSTOM_RELAY_SERVER }}"
           export CUSTOM_RENDEZVOUS_SERVER="${{ env.CUSTOM_RENDEZVOUS_SERVER }}"
 
-          # Build with custom configuration
           cargo build --release --features flutter
 
-          # Verify binary was created
-          if [ -f "target/release/rustdesk" ] || [ -f "target/release/rustdesk.exe" ]; then
+          if [ -f "target/release/rustdesk" ]; then
             echo "✅ Build successful"
           else
             echo "❌ Build failed"
@@ -146,46 +309,27 @@ jobs:
           fi
 
       - name: Build Flutter UI
-        if: github.event.inputs.build_platform != 'rust-only'
         run: |
           cd flutter
           flutter pub get
-
-          # Build for current platform
-          if [ "${{ runner.os }}" == "Windows" ]; then
-            flutter build windows --release
-          elif [ "${{ runner.os }}" == "macOS" ]; then
-            flutter build macos --release
-          else
-            flutter build linux --release
-          fi
+          flutter build macos --release
 
       - name: Package Artifacts
         run: |
           mkdir -p artifacts
 
-          # Package Rust binary
-          if [ -f "target/release/rustdesk.exe" ]; then
-            cp target/release/rustdesk.exe artifacts/
-            cp target/release/rustdesk.exe artifacts/rustdesk-custom-${{ env.CUSTOM_RENDEZVOUS_SERVER }}.exe
-          elif [ -f "target/release/rustdesk" ]; then
+          if [ -f "target/release/rustdesk" ]; then
             cp target/release/rustdesk artifacts/
             cp target/release/rustdesk artifacts/rustdesk-custom-${{ env.CUSTOM_RENDEZVOUS_SERVER }}
           fi
 
-          # Package Flutter app
-          if [ "${{ runner.os }}" == "Windows" ]; then
-            cp -r flutter/build/windows/x64/runner/Release/* artifacts/ 2>/dev/null || true
-          elif [ "${{ runner.os }}" == "macOS" ]; then
+          if [ -d "flutter/build/macos/Build/Products/Release" ]; then
             cp -r flutter/build/macos/Build/Products/Release/*.app artifacts/ 2>/dev/null || true
-          else
-            cp -r flutter/build/linux/x64/release/bundle/* artifacts/ 2>/dev/null || true
           fi
 
-          # Create config info file
           cat > artifacts/custom-config-info.txt << EOF
           Custom Server Configuration
-          ==========================
+          =========================
           Generated: $(date)
           Rendezvous Server: ${{ env.CUSTOM_RENDEZVOUS_SERVER }}
           API Server: ${{ env.CUSTOM_API_SERVER || 'Default' }}
@@ -196,25 +340,36 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rustdesk-custom-${{ env.CUSTOM_RENDEZVOUS_SERVER }}-${{ runner.os }}
+          name: rustdesk-custom-${{ env.CUSTOM_RENDEZVOUS_SERVER }}-macOS
           path: artifacts/
           retention-days: 30
 
-      - name: Create Release (Optional)
-        if: github.event.inputs.build_platform == 'all'
+  create-release:
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-linux, build-macos]
+    if: github.event.inputs.build_platform == 'all' && always() && (needs.build-windows.result == 'success' || needs.build-linux.result == 'success' || needs.build-macos.result == 'success')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: custom-${{ env.CUSTOM_RENDEZVOUS_SERVER }}-${{ github.run_number }}
-          name: Custom Build - ${{ env.CUSTOM_RENDEZVOUS_SERVER }}
+          tag_name: custom-${{ github.event.inputs.rendezvous_server }}-${{ github.run_number }}
+          name: Custom Build - ${{ github.event.inputs.rendezvous_server }}
           body: |
-            Custom RustDesk build for server: ${{ env.CUSTOM_RENDEZVOUS_SERVER }}
+            Custom RustDesk build for server: ${{ github.event.inputs.rendezvous_server }}
 
             **Configuration:**
-            - Rendezvous: ${{ env.CUSTOM_RENDEZVOUS_SERVER }}
-            - API: ${{ env.CUSTOM_API_SERVER || 'Default' }}
-            - Relay: ${{ env.CUSTOM_RELAY_SERVER || 'Default' }}
+            - Rendezvous: ${{ github.event.inputs.rendezvous_server }}
+            - API: ${{ github.event.inputs.api_server || 'Default' }}
+            - Relay: ${{ github.event.inputs.relay_server || 'Default' }}
 
             Generated via GitHub Actions
-          files: artifacts/*
+          files: |
+            rustdesk-custom-${{ github.event.inputs.rendezvous_server }}-Windows/rustdesk*
+            rustdesk-custom-${{ github.event.inputs.rendezvous_server }}-Linux/rustdesk*
+            rustdesk-custom-${{ github.event.inputs.rendezvous_server }}-macOS/rustdesk*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
